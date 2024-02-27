@@ -7,9 +7,6 @@ from tqdm import tqdm
 import random
 import os
 
-# clean memory
-import gc
-
 # evaluate the agent
 from evaluate import evaluate_HIV, evaluate_HIV_population
 
@@ -48,11 +45,6 @@ class ProjectAgent:
         self.Q = None
 
     def collect_samples(self, env, horizon, greedy_Q=None, greedy_prob=0.85):
-        self.S = []
-        self.A = []
-        self.R = []
-        self.S2 = []
-        self.D = []
 
         s, _ = env.reset()
         for _ in tqdm(range(horizon)):
@@ -75,14 +67,21 @@ class ProjectAgent:
             else:
                 s = s2
 
-    def rf_fqi(self, iterations):
-        nb_samples = len(self.S)
+    def rf_fqi(self, iterations, last_always_taken, augmented_random=None):
 
-        S = np.array(self.S)
-        A = np.array(self.A).reshape((-1, 1))
-        R = np.array(self.R)
-        S2 = np.array(self.S2)
-        D = np.array(self.D)
+        idx_samples = np.arange(len(self.S))
+        if augmented_random is not None:
+            idx_samples = np.concatenate([idx_samples[-last_always_taken:], np.random.choice(idx_samples[:-last_always_taken], augmented_random, replace=False)])
+        else:
+            idx_samples = idx_samples[-last_always_taken:]
+
+        nb_samples = len(idx_samples)
+
+        S = np.array(self.S)[idx_samples, :]
+        A = np.array(self.A).reshape((-1, 1))[idx_samples, :]
+        R = np.array(self.R)[idx_samples]
+        S2 = np.array(self.S2)[idx_samples, :]
+        D = np.array(self.D)[idx_samples]
         SA = np.append(S, A, axis=1)
 
         Q = self.Q
@@ -103,14 +102,14 @@ class ProjectAgent:
 
         self.Q = Q
 
-    def train(self, env, nb_samples, nb_iterations, nb_collects, nb_samples_first_collect=None, nb_iterations_first_collect=None):
+    def train(self, env, nb_samples, nb_iterations, nb_collects, nb_samples_first_collect=None, nb_iterations_first_collect=None, augmented_random=None):
 
         if nb_samples_first_collect is not None and nb_iterations_first_collect is not None:
             self.collect_samples(env, nb_samples_first_collect)
-            self.rf_fqi(nb_iterations_first_collect)
+            self.rf_fqi(nb_iterations_first_collect, last_always_taken=nb_samples_first_collect, augmented_random=None)
         else:
             self.collect_samples(env, nb_samples)
-            self.rf_fqi(nb_iterations)
+            self.rf_fqi(nb_iterations, last_always_taken=nb_samples, augmented_random=None)
 
         print(0, evaluate_HIV(agent=self, nb_episode=5) / 1000000)
 
@@ -119,7 +118,7 @@ class ProjectAgent:
 
         for _ in range(nb_collects-1):
             self.collect_samples(env, nb_samples, self.Q, greedy_prob=0.85)
-            self.rf_fqi(nb_iterations)
+            self.rf_fqi(nb_iterations, last_always_taken=nb_samples, augmented_random=augmented_random)
 
             seed_everything(seed=42)
             print(_+1, evaluate_HIV(agent=self, nb_episode=5) / 1000000)
@@ -150,7 +149,15 @@ if __name__ == "__main__":
 
     # train the agent
     agent = ProjectAgent()
-    episode_return = agent.train(env, 1600, 100, 20, 16000, 1000)
+    episode_return = agent.train(
+        env,
+        nb_samples=1600,
+        nb_iterations=100,
+        nb_collects=20,
+        nb_samples_first_collect=8000,
+        nb_iterations_first_collect=400,
+        augmented_random=1600,
+    )
     agent.save(PATH)
     print(episode_return)
     env.close()

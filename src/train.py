@@ -4,6 +4,14 @@ from sklearn.ensemble import ExtraTreesRegressor, RandomForestRegressor
 import pickle
 import numpy as np
 from tqdm import tqdm
+import random
+import os
+
+# clean memory
+import gc
+
+# evaluate the agent
+from evaluate import evaluate_HIV, evaluate_HIV_population
 
 PATH = "model.pkl"
 
@@ -23,111 +31,106 @@ def greedy_action(Q, s, nb_actions):
         Qsa.append(Q.predict(sa))
     return np.argmax(Qsa)
 
+def seed_everything(seed: int = 42):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+
 
 class ProjectAgent:
     def __init__(self):
         self.gamma = 0.98
-        self.S = None
-        self.A = None
-        self.R = None
-        self.S2 = None
-        self.D = None
-        self.Qfunctions = None
+        self.S = []
+        self.A = []
+        self.R = []
+        self.S2 = []
+        self.D = []
+        self.Q = None
 
-    def collect_samples(self, env, horizon):
+    def collect_samples(self, env, horizon, greedy_Q=None, greedy_prob=0.85):
+        self.S = []
+        self.A = []
+        self.R = []
+        self.S2 = []
+        self.D = []
+
         s, _ = env.reset()
-        # dataset = []
-        S = []
-        A = []
-        R = []
-        S2 = []
-        D = []
         for _ in tqdm(range(horizon)):
-            a = env.action_space.sample()
+            if greedy_Q is not None:
+                if np.random.rand() < greedy_prob:
+                    a = greedy_action(greedy_Q, s, env.action_space.n)
+                else:
+                    a = np.random.randint(env.action_space.n)
+            else:
+                a = np.random.randint(env.action_space.n)
             s2, r, done, trunc, _ = env.step(a)
             # dataset.append((s,a,r,s2,done,trunc))
-            S.append(s)
-            A.append(a)
-            R.append(r)
-            S2.append(s2)
-            D.append(done)
+            self.S.append(s)
+            self.A.append(a)
+            self.R.append(r)
+            self.S2.append(s2)
+            self.D.append(done)
             if done or trunc:
                 s, _ = env.reset()
             else:
                 s = s2
-        self.S = np.array(S)
-        self.A = np.array(A).reshape((-1, 1))
-        self.R = np.array(R)
-        self.S2 = np.array(S2)
-        self.D = np.array(D)
 
     def rf_fqi(self, iterations):
-        nb_samples = self.S.shape[0]
-        Qfunctions = []
-        SA = np.append(self.S, self.A, axis=1)
+        nb_samples = len(self.S)
+
+        S = np.array(self.S)
+        A = np.array(self.A).reshape((-1, 1))
+        R = np.array(self.R)
+        S2 = np.array(self.S2)
+        D = np.array(self.D)
+        SA = np.append(S, A, axis=1)
+
+        Q = self.Q
         for iter in tqdm(range(iterations)):
-            if iter == 0:
-                value = self.R.copy()
+            if iter == 0 and Q is None:
+                value = R.copy() # Q.predict
             else:
                 Q2 = np.zeros((nb_samples, 4))
                 for a2 in range(4):
-                    A2 = a2 * np.ones((self.S.shape[0], 1))
-                    S2A2 = np.append(self.S2, A2, axis=1)
-                    Q2[:, a2] = Qfunctions[-1].predict(S2A2)
+                    A2 = a2 * np.ones((S.shape[0], 1))
+                    S2A2 = np.append(S2, A2, axis=1)
+                    Q2[:, a2] = Q.predict(S2A2)
                 max_Q2 = np.max(Q2, axis=1)
-                value = self.R + self.gamma * (1 - self.D) * max_Q2
-            Q = ExtraTreesRegressor(n_estimators=40, max_depth=10)
+                value = R + self.gamma * (1 - D) * max_Q2
+
+            Q = ExtraTreesRegressor(n_estimators=50, n_jobs=-1)
             Q.fit(SA, value)
-            Qfunctions.append(Q)
 
-        # Display evolution of bellman residual
-        bellman_residuals = []
-        for iter in range(iterations):
-            Q = Qfunctions[iter]
-            Q2 = np.zeros((nb_samples, 4))
-            for a2 in range(4):
-                A2 = a2 * np.ones((self.S.shape[0], 1))
-                S2A2 = np.append(self.S2, A2, axis=1)
-                Q2[:, a2] = Q.predict(S2A2)
-            max_Q2 = np.max(Q2, axis=1)
-            bellman_residuals.append(np.mean((self.R + self.gamma * (1 - self.D) * max_Q2 - Q.predict(SA)) ** 2))
+        self.Q = Q
 
-        import matplotlib.pyplot as plt
+    def train(self, env, nb_samples, nb_iterations, nb_collects, nb_samples_first_collect=None, nb_iterations_first_collect=None):
 
-        plt.plot(bellman_residuals)
-        plt.title("Bellman Residuals")
-        plt.show()
+        if nb_samples_first_collect is not None and nb_iterations_first_collect is not None:
+            self.collect_samples(env, nb_samples_first_collect)
+            self.rf_fqi(nb_iterations_first_collect)
+        else:
+            self.collect_samples(env, nb_samples)
+            self.rf_fqi(nb_iterations)
 
-        # Display reward of greedy agent reward
-        rs = []
-        for _ in range(10):
-            print("Episode ", _)
-            s, _ = env.reset()
-            cum_reward = 0
-            t = 0
-            done = False
-            trunc = False
-            while not done and not trunc:
-                a = greedy_action(Qfunctions[-1], s, env.action_space.n)
-                s, r, done, trunc, _ = env.step(a)
-                cum_reward += self.gamma ** t * r
-                t += 1
-            rs.append(cum_reward)
+        print(0, evaluate_HIV(agent=self, nb_episode=5) / 1000000)
 
-        print("Mean reward of greedy agent: ", np.mean(rs) / 1000000)
-        print("Standard deviation of greedy agent: ", np.std(rs) / 1000000)     
+        # Make an auto-save
+        self.save(PATH[:-4] + "_autosave_0.pkl")
 
-        self.Q = Qfunctions[-1]
+        for _ in range(nb_collects-1):
+            self.collect_samples(env, nb_samples, self.Q, greedy_prob=0.85)
+            self.rf_fqi(nb_iterations)
 
-    def train(self, env, nb_samples, nb_iterations):
+            seed_everything(seed=42)
+            print(_+1, evaluate_HIV(agent=self, nb_episode=5) / 1000000)
+            seed_everything(seed=999)
 
-        self.collect_samples(env, nb_samples)
-
-        self.rf_fqi(nb_iterations)
+            # Make an auto-save
+            self.save(PATH[:-4] + f"_autosave_{_+1}.pkl")
 
     def act(self, observation, use_random=False):
         if use_random:
-            return env.action_space.sample()
+            return np.random.randint(env.action_space.n)
         else:
             return greedy_action(self.Q, observation, env.action_space.n)
 
@@ -141,8 +144,21 @@ class ProjectAgent:
 
 
 if __name__ == "__main__":
+
+    # # seed for reproducibility
+    seed_everything(seed=999)
+
+    # train the agent
     agent = ProjectAgent()
-    episode_return = agent.train(env, 2000, 200)
+    episode_return = agent.train(env, 1600, 100, 20, 16000, 1000)
     agent.save(PATH)
     print(episode_return)
     env.close()
+
+    # seed for reproducibility
+    seed_everything(seed=42)
+
+    print("Evaluation of the agent without domain randomization")
+    print(evaluate_HIV(agent=agent, nb_episode=5) / 1000000)
+    # print("Evaluation of the agent with domain randomization")
+    # print(evaluate_HIV_population(agent=agent, nb_episode=5) / 1000000)

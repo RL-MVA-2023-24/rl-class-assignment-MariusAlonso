@@ -152,11 +152,11 @@ if __name__ == "__main__":
     episode_return = agent.train(
         env,
         nb_samples=1600,
-        nb_iterations=100,
+        nb_iterations=200,
         nb_collects=20,
-        nb_samples_first_collect=8000,
+        nb_samples_first_collect=12000,
         nb_iterations_first_collect=400,
-        augmented_random=1600,
+        augmented_random=3200,
     )
     agent.save(PATH)
     print(episode_return)

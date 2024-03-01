@@ -151,12 +151,12 @@ if __name__ == "__main__":
     agent = ProjectAgent()
     episode_return = agent.train(
         env,
-        nb_samples=2000,
-        nb_iterations=300,
+        nb_samples=4000,
+        nb_iterations=500,
         nb_collects=50,
         nb_samples_first_collect=16000,
         nb_iterations_first_collect=800,
-        augmented_random=4000,
+        augmented_random=6000,
     )
     agent.save(PATH)
     print(episode_return)
